@@ -17,8 +17,8 @@ self.addEventListener('activate', e => {
 self.addEventListener('fetch', e => {
   const url = new URL(e.request.url);
 
-  // Ne pas intercepter les appels API GNews
-  if (url.hostname === 'gnews.io') return;
+  // Ne pas intercepter les appels API proxy
+  if (url.pathname.startsWith('/api/')) return;
 
   // Network-first pour JS/CSS
   const isDynamic = url.pathname.endsWith('.js') || url.pathname.endsWith('.css');

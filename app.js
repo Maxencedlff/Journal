@@ -1,8 +1,7 @@
 'use strict';
 
 // ===== CONFIG =====
-const API_KEY = 'c0580bedaccc241787b68df2c4e6d6f8';
-const API_BASE = 'https://gnews.io/api/v4';
+const API_BASE = '/api/news';
 const CACHE_DURATION = 2 * 60 * 60 * 1000; // 2 heures
 const MAX_ARTICLES = 10;
 const MAX_DAYS_BACK = 14;
@@ -122,16 +121,16 @@ async function fetchArticles(cat, dateStr) {
     return { articles: articleCache[cacheKey].data, fromCache: true, cacheAge: now - articleCache[cacheKey].timestamp };
   }
 
-  // Construire l'URL
-  let url = `${API_BASE}/top-headlines?category=${cat}&lang=fr&country=fr&max=${MAX_ARTICLES}&token=${API_KEY}`;
+  // Construire l'URL vers le proxy Vercel
+  let url = `${API_BASE}?category=${cat}&max=${MAX_ARTICLES}`;
 
-  // Pour les dates passées, utiliser la recherche avec filtre de date
+  // Pour les dates passées, ajouter les filtres from/to
   if (dateStr) {
     const from = new Date(dateStr);
     from.setHours(0, 0, 0, 0);
     const to = new Date(dateStr);
     to.setHours(23, 59, 59, 999);
-    url = `${API_BASE}/top-headlines?category=${cat}&lang=fr&country=fr&max=${MAX_ARTICLES}&from=${from.toISOString()}&to=${to.toISOString()}&token=${API_KEY}`;
+    url += `&from=${from.toISOString()}&to=${to.toISOString()}`;
   }
 
   const response = await fetch(url);
@@ -149,7 +148,7 @@ async function fetchArticles(cat, dateStr) {
 }
 
 async function searchArticles(query) {
-  const url = `${API_BASE}/search?q=${encodeURIComponent(query)}&lang=fr&country=fr&max=${MAX_ARTICLES}&token=${API_KEY}`;
+  const url = `${API_BASE}?q=${encodeURIComponent(query)}&max=${MAX_ARTICLES}`;
   const response = await fetch(url);
   if (!response.ok) throw new Error(`API Error ${response.status}`);
   const json = await response.json();
