@@ -215,6 +215,29 @@ async function searchArticles(query) {
   return (await res.json()).articles || [];
 }
 
+// ===== FEATURED BANNER =====
+async function loadFeaturedBanner() {
+  const banner = document.getElementById('featured-banner');
+  if (!banner) return;
+  try {
+    const { articles } = await fetchArticles('general', null, 1);
+    if (!articles.length) return;
+    const a = articles[0];
+    banner.innerHTML = `
+      <div class="featured-banner" id="featured-banner-inner">
+        <div class="featured-label">À la une</div>
+        <div class="featured-body">
+          <div class="featured-title">${esc(a.title)}</div>
+          <div class="featured-meta">${esc(a.source?.name || '')} · ${fmtDate(a.publishedAt)}</div>
+        </div>
+        ${a.image ? `<img class="featured-thumb" src="${esc(a.image)}" alt="" loading="lazy" onerror="this.style.display='none'">` : ''}
+      </div>`;
+    document.getElementById('featured-banner-inner').addEventListener('click', () => {
+      openArticle(a, 'general', articles, 0);
+    });
+  } catch {}
+}
+
 // ===== HEADER =====
 function renderHeaderDate() {
   const el = document.getElementById('header-date');
@@ -908,4 +931,5 @@ document.addEventListener('DOMContentLoaded', () => {
   bindBottomNav();
   registerSW();
   renderHome();
+  loadFeaturedBanner();
 });
