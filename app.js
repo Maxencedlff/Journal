@@ -353,25 +353,10 @@ function bindHomeEvents(container, articles) {
 }
 
 // ===== OPEN ARTICLE =====
-function openArticle(article, catId) {
-  currentArticle = article;
-  const overlay = document.getElementById('article-overlay');
-  overlay.classList.remove('hidden');
-  overlay.scrollTop = 0;
-
+function renderArticleShell(article, catId, bodyHtml) {
   const saved = isArticleSaved(article.url);
   const catLabel = getCatLabel(catId || currentCat);
-
-  // Découper le contenu en paragraphes
-  let bodyHtml = '';
-  if (article.content) {
-    // GNews tronque avec "... [X chars]", on affiche jusqu'à la coupure
-    const clean = article.content.replace(/\[\d+ chars\]$/, '').trim();
-    const paras = clean.split(/\n+/).filter(Boolean);
-    bodyHtml = paras.map(p => `<p>${esc(p)}</p>`).join('');
-  }
-
-  overlay.innerHTML = `
+  return `
     <div class="article-reader">
       <div class="reader-header">
         <button class="reader-back" id="reader-back">&#8592;</button>
@@ -397,20 +382,31 @@ function openArticle(article, catId) {
 
         ${article.description ? `<div class="reader-description">${esc(article.description)}</div>` : ''}
 
-        ${bodyHtml ? `<div class="reader-body">${bodyHtml}</div>` : ''}
+        <div id="reader-body-slot">${bodyHtml}</div>
 
         <a href="${esc(article.url)}" target="_blank" rel="noopener" class="reader-more">
-          Lire l'article complet sur ${esc(article.source?.name || 'la source')} →
+          Lire l'article sur ${esc(article.source?.name || 'la source')} →
         </a>
 
         <div class="reader-source">
-          Source : ${esc(article.source?.name || '')} · ${esc(article.source?.url || '')}
+          Source : ${esc(article.source?.name || '')}
         </div>
       </div>
     </div>
   `;
+}
 
-  // Events
+function openArticle(article, catId) {
+  currentArticle = article;
+  const overlay = document.getElementById('article-overlay');
+  overlay.classList.remove('hidden');
+  overlay.scrollTop = 0;
+
+  // Afficher d'abord le shell avec un spinner dans le corps
+  const loadingBody = `<div class="reader-loading"><div class="spinner"></div></div>`;
+  overlay.innerHTML = renderArticleShell(article, catId, loadingBody);
+
+  // Events immédiatement
   document.getElementById('reader-back').addEventListener('click', closeArticle);
   document.getElementById('reader-save-btn').addEventListener('click', () => {
     toggleSave(article);
@@ -422,6 +418,29 @@ function openArticle(article, catId) {
     }
     if (currentView === 'saved') renderSaved();
   });
+
+  // Charger le contenu complet en arrière-plan
+  fetchFullArticle(article.url);
+}
+
+async function fetchFullArticle(url) {
+  const slot = document.getElementById('reader-body-slot');
+  if (!slot) return;
+  try {
+    const res = await fetch(`/api/article?url=${encodeURIComponent(url)}`);
+    const data = await res.json();
+    if (!document.getElementById('reader-body-slot')) return; // overlay fermé entre-temps
+    if (data.paragraphs && data.paragraphs.length) {
+      document.getElementById('reader-body-slot').innerHTML =
+        `<div class="reader-body">${data.paragraphs.map(p => `<p>${esc(p)}</p>`).join('')}</div>`;
+    } else {
+      document.getElementById('reader-body-slot').innerHTML = '';
+    }
+  } catch {
+    if (document.getElementById('reader-body-slot')) {
+      document.getElementById('reader-body-slot').innerHTML = '';
+    }
+  }
 }
 
 function closeArticle() {
