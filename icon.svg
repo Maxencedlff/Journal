@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" fill="#0d0d0d"/>
+  <!-- Gold border lines -->
+  <rect x="24" y="24" width="464" height="464" fill="none" stroke="#c9a84c" stroke-width="3"/>
+  <rect x="32" y="32" width="448" height="448" fill="none" stroke="#c9a84c" stroke-width="1"/>
+  <!-- Newspaper icon - masthead lines -->
+  <rect x="64" y="80" width="384" height="4" fill="#c9a84c"/>
+  <rect x="64" y="96" width="384" height="1.5" fill="#c9a84c" opacity="0.5"/>
+  <!-- Big J letter -->
+  <text x="256" y="310" font-family="Georgia, serif" font-size="240" font-weight="bold"
+        text-anchor="middle" fill="#e8e4dc" opacity="0.95">J</text>
+  <!-- Bottom line -->
+  <rect x="64" y="420" width="384" height="1.5" fill="#c9a84c" opacity="0.5"/>
+  <rect x="64" y="428" width="384" height="4" fill="#c9a84c"/>
+  <!-- Subtitle text lines -->
+  <rect x="100" y="448" width="312" height="3" fill="#c9a84c" opacity="0.3"/>
+</svg>
