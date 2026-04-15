@@ -118,7 +118,7 @@ async function fetchArticles(cat, dateStr) {
 
   // Vérifier le cache
   if (articleCache[cacheKey] && (now - articleCache[cacheKey].timestamp < CACHE_DURATION)) {
-    return { articles: articleCache[cacheKey].data, fromCache: true, cacheAge: now - articleCache[cacheKey].timestamp };
+    return { articles: articleCache[cacheKey].data };
   }
 
   // Construire l'URL vers le proxy Vercel
@@ -144,7 +144,7 @@ async function fetchArticles(cat, dateStr) {
   articleCache[cacheKey] = { data: articles, timestamp: now };
   saveCache();
 
-  return { articles, fromCache: false, cacheAge: 0 };
+  return { articles };
 }
 
 async function searchArticles(query) {
@@ -197,9 +197,9 @@ async function renderHome() {
     dateStr = d.toISOString().split('T')[0];
   }
 
-  let articles, fromCache, cacheAge;
+  let articles;
   try {
-    ({ articles, fromCache, cacheAge } = await fetchArticles(currentCat, dateStr));
+    ({ articles } = await fetchArticles(currentCat, dateStr));
   } catch (e) {
     main.innerHTML = `
       <div class="error-box">
@@ -223,20 +223,12 @@ async function renderHome() {
   const hero = articles[0];
   const rest = articles.slice(1);
 
-  const cacheInfo = fromCache
-    ? `<span class="cache-dot stale"></span> Mis en cache (${Math.floor(cacheAge / 60000)} min)`
-    : `<span class="cache-dot fresh"></span> Données fraîches`;
-
   const catLabel = getCatLabel(currentCat);
   const catIcon = getCatIcon(currentCat);
 
   let html = `
     <div class="home-view">
       ${renderDateNavHTML()}
-      <div class="update-bar">
-        <span class="cache-badge">${cacheInfo}</span>
-        <button class="update-btn" id="force-refresh-btn">↻ Actualiser</button>
-      </div>
 
       <!-- HERO -->
       <div class="hero-article" data-url="${esc(hero.url)}">
@@ -334,19 +326,6 @@ function renderArticleCard(article, idx, catLabel) {
 function bindHomeEvents(container, articles) {
   // Date nav
   bindDateNav(container);
-
-  // Force refresh
-  const refreshBtn = container.querySelector('#force-refresh-btn');
-  if (refreshBtn) {
-    refreshBtn.addEventListener('click', () => {
-      // Supprimer le cache pour cette catégorie
-      Object.keys(articleCache).forEach(k => {
-        if (k.startsWith(currentCat + '_')) delete articleCache[k];
-      });
-      saveCache();
-      renderHome();
-    });
-  }
 
   // Clic article
   container.querySelectorAll('.hero-article, .article-card').forEach(el => {
