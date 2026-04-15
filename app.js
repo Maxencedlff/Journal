@@ -605,6 +605,20 @@ function registerSW() {
   }
 }
 
+function forceUpdate() {
+  const btn = document.getElementById('sw-update-btn');
+  if (btn) { btn.textContent = '↻ Mise à jour…'; btn.disabled = true; }
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.getRegistrations().then(regs => {
+      Promise.all(regs.map(r => r.unregister())).then(() => {
+        window.location.reload(true);
+      });
+    });
+  } else {
+    window.location.reload(true);
+  }
+}
+
 // ===== INIT =====
 document.addEventListener('DOMContentLoaded', () => {
   loadStorage();
