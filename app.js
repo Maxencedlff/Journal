@@ -424,22 +424,20 @@ function openArticle(article, catId) {
 }
 
 async function fetchFullArticle(url) {
-  const slot = document.getElementById('reader-body-slot');
-  if (!slot) return;
+  if (!document.getElementById('reader-body-slot')) return;
   try {
     const res = await fetch(`/api/article?url=${encodeURIComponent(url)}`);
     const data = await res.json();
-    if (!document.getElementById('reader-body-slot')) return; // overlay fermé entre-temps
+    const slot = document.getElementById('reader-body-slot');
+    if (!slot) return;
     if (data.paragraphs && data.paragraphs.length) {
-      document.getElementById('reader-body-slot').innerHTML =
-        `<div class="reader-body">${data.paragraphs.map(p => `<p>${esc(p)}</p>`).join('')}</div>`;
+      slot.innerHTML = `<div class="reader-body">${data.paragraphs.map(p => `<p>${esc(p)}</p>`).join('')}</div>`;
     } else {
-      document.getElementById('reader-body-slot').innerHTML = '';
+      slot.innerHTML = `<div class="reader-unavailable">Article complet non disponible — le site source bloque la lecture intégrée.</div>`;
     }
   } catch {
-    if (document.getElementById('reader-body-slot')) {
-      document.getElementById('reader-body-slot').innerHTML = '';
-    }
+    const slot = document.getElementById('reader-body-slot');
+    if (slot) slot.innerHTML = `<div class="reader-unavailable">Article complet non disponible — le site source bloque la lecture intégrée.</div>`;
   }
 }
 
