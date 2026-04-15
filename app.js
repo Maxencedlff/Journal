@@ -30,12 +30,15 @@ let savedArticles = [];
 let readHistory = [];
 let articleCache = {};
 let searchQuery = '';
+let loadedPage = 1;
+let hasMorePages = false;
 let settings = {
   theme: 'dark',
   fontSize: 'medium',
   catOrder: DEFAULT_CATEGORIES.map(c => c.id),
   hiddenCats: [],
   blockedSources: [],
+  notifications: false,
 };
 
 // ===== CATEGORIES =====
@@ -145,14 +148,54 @@ function filterArticles(articles) {
   return articles.filter(a => !settings.blockedSources.includes(a.source?.name || ''));
 }
 
+// ===== NOTIFICATIONS =====
+function checkAndNotify(articles) {
+  if (!settings.notifications) return;
+  if (!('Notification' in window) || Notification.permission !== 'granted') return;
+  const lastSeen = parseInt(localStorage.getItem('journal_last_seen') || '0');
+  if (!lastSeen) { localStorage.setItem('journal_last_seen', Date.now()); return; }
+  const newOnes = articles.filter(a => a.publishedAt && new Date(a.publishedAt).getTime() > lastSeen);
+  if (newOnes.length > 0) {
+    new Notification('Journal de La Fouchardière', {
+      body: `${newOnes.length} nouvel${newOnes.length > 1 ? 'les' : ''} article${newOnes.length > 1 ? 's' : ''} disponible${newOnes.length > 1 ? 's' : ''}`,
+      icon: '/icon.svg',
+      badge: '/icon.svg',
+      tag: 'journal-news',
+    });
+  }
+  localStorage.setItem('journal_last_seen', Date.now());
+}
+
+async function toggleNotifications() {
+  if (!('Notification' in window)) {
+    alert('Votre navigateur ne supporte pas les notifications.');
+    return;
+  }
+  if (settings.notifications) {
+    settings.notifications = false;
+    saveSettings();
+    renderSettings();
+    return;
+  }
+  const perm = await Notification.requestPermission();
+  if (perm === 'granted') {
+    settings.notifications = true;
+    localStorage.setItem('journal_last_seen', Date.now());
+    saveSettings();
+    renderSettings();
+  } else {
+    alert('Permission refusée. Activez les notifications dans Réglages > Safari > Notifications.');
+  }
+}
+
 // ===== API =====
-async function fetchArticles(cat, dateStr) {
-  const cacheKey = `${cat}_${dateStr || 'today'}`;
+async function fetchArticles(cat, dateStr, page = 1) {
+  const cacheKey = `${cat}_${dateStr || 'today'}_p${page}`;
   const now = Date.now();
   if (articleCache[cacheKey] && (now - articleCache[cacheKey].timestamp < CACHE_DURATION)) {
     return { articles: articleCache[cacheKey].data };
   }
-  let url = `${API_BASE}?category=${cat}&max=${MAX_ARTICLES}`;
+  let url = `${API_BASE}?category=${cat}&max=${MAX_ARTICLES}&page=${page}`;
   if (dateStr) {
     const from = new Date(dateStr); from.setHours(0,0,0,0);
     const to   = new Date(dateStr); to.setHours(23,59,59,999);
@@ -200,6 +243,9 @@ async function renderHome() {
   const main = document.getElementById('main-content');
   main.innerHTML = `<div class="loading"><div class="spinner"></div><div class="loading-text">Chargement…</div></div>`;
 
+  loadedPage = 1;
+  hasMorePages = false;
+
   let dateStr = null;
   if (dateOffset > 0) {
     const d = new Date(); d.setDate(d.getDate() - dateOffset);
@@ -208,13 +254,14 @@ async function renderHome() {
 
   let articles;
   try {
-    ({ articles } = await fetchArticles(currentCat, dateStr));
+    ({ articles } = await fetchArticles(currentCat, dateStr, 1));
   } catch {
     main.innerHTML = `<div class="error-box"><p>Impossible de charger les articles.<br>Vérifiez votre connexion.</p><button onclick="renderHome()">Réessayer</button></div>`;
     return;
   }
 
   articles = filterArticles(articles);
+  hasMorePages = articles.length >= MAX_ARTICLES;
 
   if (!articles.length) {
     main.innerHTML = `${renderDateNavHTML()}<div class="error-box" style="margin-top:24px;"><p>Aucun article disponible.</p></div>`;
@@ -222,10 +269,15 @@ async function renderHome() {
     return;
   }
 
+  currentArticleList = articles;
+  currentArticleCat = currentCat;
+
+  checkAndNotify(articles);
+
   const hero = articles[0];
   const rest = articles.slice(1);
-  const catLabel = getCatLabel(currentCat);
-  const catIcon  = getCatIcon(currentCat);
+  const catLabel  = getCatLabel(currentCat);
+  const catIcon   = getCatIcon(currentCat);
   const dateLabel = dateOffset === 0 ? 'Aujourd\'hui' : dateOffset === 1 ? 'Hier' : fmtDateOffset(dateOffset);
 
   main.innerHTML = `
@@ -251,15 +303,57 @@ async function renderHome() {
         <div class="section-header">
           <span class="section-title">${catLabel} — ${dateLabel}</span>
           <span class="section-line"></span>
-        </div>
-        <div class="article-list">
-          ${rest.map((a, i) => renderArticleCard(a, i + 1, catLabel)).join('')}
         </div>` : ''}
+      <div class="article-list" id="article-list">
+        ${rest.map((a, i) => renderArticleCard(a, i + 1, catLabel)).join('')}
+      </div>
+      <div class="load-more-wrap" id="load-more-wrap">
+        ${hasMorePages ? `<button class="load-more-btn" id="load-more-btn">Charger plus d'articles</button>` : ''}
+      </div>
     </div>`;
 
-  currentArticleList = articles;
-  currentArticleCat = currentCat;
-  bindHomeEvents(main, articles);
+  bindHomeEvents(main);
+}
+
+async function loadMoreArticles() {
+  const btn = document.getElementById('load-more-btn');
+  if (btn) { btn.textContent = 'Chargement…'; btn.disabled = true; }
+
+  loadedPage++;
+  let dateStr = null;
+  if (dateOffset > 0) {
+    const d = new Date(); d.setDate(d.getDate() - dateOffset);
+    dateStr = d.toISOString().split('T')[0];
+  }
+
+  try {
+    const { articles: newArticles } = await fetchArticles(currentCat, dateStr, loadedPage);
+    const filtered = filterArticles(newArticles);
+    const offset = currentArticleList.length;
+    currentArticleList = [...currentArticleList, ...filtered];
+    hasMorePages = newArticles.length >= MAX_ARTICLES;
+
+    const list = document.getElementById('article-list');
+    const catLabel = getCatLabel(currentCat);
+    if (list) {
+      filtered.forEach((a, i) => {
+        list.insertAdjacentHTML('beforeend', renderArticleCard(a, offset + i, catLabel));
+      });
+    }
+
+    const wrap = document.getElementById('load-more-wrap');
+    if (wrap) {
+      wrap.innerHTML = hasMorePages
+        ? `<button class="load-more-btn" id="load-more-btn">Charger plus d'articles</button>`
+        : `<div class="load-more-end">Vous êtes à jour ✓</div>`;
+      if (hasMorePages) {
+        document.getElementById('load-more-btn').addEventListener('click', loadMoreArticles);
+      }
+    }
+  } catch {
+    const b = document.getElementById('load-more-btn');
+    if (b) { b.textContent = 'Charger plus d\'articles'; b.disabled = false; }
+  }
 }
 
 function renderDateNavHTML() {
@@ -303,23 +397,29 @@ function renderArticleCard(article, idx, catLabel) {
     </div>`;
 }
 
-function bindHomeEvents(container, articles) {
+function bindHomeEvents(container) {
   bindDateNav(container);
-  container.querySelectorAll('.hero-article, .article-card').forEach(el => {
-    el.addEventListener('click', e => {
-      if (e.target.closest('.hero-save') || e.target.closest('.card-save-btn')) return;
-      const idx = parseInt(el.dataset.idx || '0');
-      openArticle(articles[idx], currentCat, articles, idx);
-    });
-  });
-  container.querySelectorAll('.hero-save, .card-save-btn').forEach(btn => {
-    btn.addEventListener('click', e => {
+
+  // Load more
+  document.getElementById('load-more-btn')?.addEventListener('click', loadMoreArticles);
+
+  // Event delegation — fonctionne aussi pour les cartes chargées dynamiquement
+  container.addEventListener('click', e => {
+    const saveBtn = e.target.closest('.hero-save, .card-save-btn');
+    if (saveBtn) {
       e.stopPropagation();
-      const idx = parseInt(btn.dataset.idx || '0');
-      toggleSave(articles[idx]);
-      btn.classList.toggle('saved', isArticleSaved(articles[idx].url));
+      const idx = parseInt(saveBtn.dataset.idx || '0');
+      const a = currentArticleList[idx];
+      if (a) { toggleSave(a); saveBtn.classList.toggle('saved', isArticleSaved(a.url)); }
       if (currentView === 'saved') renderSaved();
-    });
+      return;
+    }
+    const card = e.target.closest('.hero-article, .article-card');
+    if (card) {
+      const idx = parseInt(card.dataset.idx || '0');
+      const a = currentArticleList[idx];
+      if (a) openArticle(a, currentCat, currentArticleList, idx);
+    }
   });
 }
 
@@ -619,6 +719,13 @@ function renderSettings() {
         </div>
 
         <div class="settings-row">
+          <span class="settings-label">Notifications</span>
+          <button class="toggle-btn ${settings.notifications ? 'active' : ''}" id="notif-toggle">
+            ${settings.notifications ? '🔔 Activées' : '🔕 Désactivées'}
+          </button>
+        </div>
+
+        <div class="settings-row">
           <span class="settings-label">Taille du texte</span>
           <div class="toggle-group">
             <button class="toggle-btn font-sz-btn ${settings.fontSize === 'small'  ? 'active' : ''}" data-size="small"  style="font-size:12px">A</button>
@@ -683,6 +790,9 @@ function renderSettings() {
       </div>
 
     </div>`;
+
+  // Notifications
+  document.getElementById('notif-toggle')?.addEventListener('click', toggleNotifications);
 
   // Theme
   main.querySelectorAll('[data-theme]').forEach(btn => {

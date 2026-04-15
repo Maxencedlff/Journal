@@ -9,13 +9,13 @@ export default async function handler(req, res) {
     return;
   }
 
-  const { category, q, from, to, max = 10 } = req.query;
+  const { category, q, from, to, max = 10, page = 1 } = req.query;
 
   let url;
   if (q) {
-    url = `${API_BASE}/search?q=${encodeURIComponent(q)}&lang=fr&country=fr&max=${max}&token=${API_KEY}`;
+    url = `${API_BASE}/search?q=${encodeURIComponent(q)}&lang=fr&country=fr&max=${max}&page=${page}&token=${API_KEY}`;
   } else {
-    url = `${API_BASE}/top-headlines?category=${category || 'general'}&lang=fr&country=fr&max=${max}&token=${API_KEY}`;
+    url = `${API_BASE}/top-headlines?category=${category || 'general'}&lang=fr&country=fr&max=${max}&page=${page}&token=${API_KEY}`;
     if (from) url += `&from=${from}`;
     if (to) url += `&to=${to}`;
   }
