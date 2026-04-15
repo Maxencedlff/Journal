@@ -2,11 +2,11 @@
 
 // ===== CONFIG =====
 const API_BASE = '/api/news';
-const CACHE_DURATION = 2 * 60 * 60 * 1000; // 2 heures
+const CACHE_DURATION = 2 * 60 * 60 * 1000;
 const MAX_ARTICLES = 10;
 const MAX_DAYS_BACK = 14;
 
-const CATEGORIES = [
+const DEFAULT_CATEGORIES = [
   { id: 'general',       label: 'À la une',  icon: '📰' },
   { id: 'nation',        label: 'France',    icon: '🇫🇷' },
   { id: 'world',         label: 'Monde',     icon: '🌍' },
@@ -22,155 +22,166 @@ const CATEGORIES = [
 let currentView = 'home';
 let currentCat = 'general';
 let currentArticle = null;
-let dateOffset = 0; // 0 = aujourd'hui, 1 = hier, etc.
+let currentArticleIdx = 0;
+let currentArticleList = [];
+let currentArticleCat = 'general';
+let dateOffset = 0;
 let savedArticles = [];
-let articleCache = {}; // { key: { data, timestamp } }
+let readHistory = [];
+let articleCache = {};
 let searchQuery = '';
+let settings = {
+  theme: 'dark',
+  fontSize: 'medium',
+  catOrder: DEFAULT_CATEGORIES.map(c => c.id),
+  hiddenCats: [],
+  blockedSources: [],
+};
+
+// ===== CATEGORIES =====
+function getCategories() {
+  return settings.catOrder
+    .map(id => DEFAULT_CATEGORIES.find(c => c.id === id))
+    .filter(c => c && !settings.hiddenCats.includes(c.id));
+}
 
 // ===== STORAGE =====
 function loadStorage() {
   try {
     savedArticles = JSON.parse(localStorage.getItem('journal_saved') || '[]');
-    articleCache = JSON.parse(localStorage.getItem('journal_cache') || '{}');
-  } catch (e) {
-    savedArticles = [];
-    articleCache = {};
+    articleCache  = JSON.parse(localStorage.getItem('journal_cache') || '{}');
+    readHistory   = JSON.parse(localStorage.getItem('journal_history') || '[]');
+    const s = JSON.parse(localStorage.getItem('journal_settings') || '{}');
+    settings = { ...settings, ...s };
+    if (!Array.isArray(settings.catOrder) || settings.catOrder.length !== DEFAULT_CATEGORIES.length) {
+      settings.catOrder = DEFAULT_CATEGORIES.map(c => c.id);
+    }
+    if (!Array.isArray(settings.hiddenCats))    settings.hiddenCats = [];
+    if (!Array.isArray(settings.blockedSources)) settings.blockedSources = [];
+  } catch {
+    savedArticles = []; articleCache = {}; readHistory = [];
   }
 }
 
-function saveStorage() {
-  try {
-    localStorage.setItem('journal_saved', JSON.stringify(savedArticles));
-  } catch (e) {}
-}
-
+function saveStorage()  { try { localStorage.setItem('journal_saved', JSON.stringify(savedArticles)); } catch {} }
+function saveSettings() { try { localStorage.setItem('journal_settings', JSON.stringify(settings)); } catch {} }
+function saveHistory()  { try { localStorage.setItem('journal_history', JSON.stringify(readHistory)); } catch {} }
 function saveCache() {
   try {
-    // Nettoyer le cache expiré avant de sauvegarder
     const now = Date.now();
     Object.keys(articleCache).forEach(k => {
-      if (now - articleCache[k].timestamp > CACHE_DURATION * 2) {
-        delete articleCache[k];
-      }
+      if (now - articleCache[k].timestamp > CACHE_DURATION * 2) delete articleCache[k];
     });
     localStorage.setItem('journal_cache', JSON.stringify(articleCache));
-  } catch (e) {}
+  } catch {}
 }
+
+// ===== THEME & FONT =====
+function applyTheme() {
+  document.body.classList.toggle('light', settings.theme === 'light');
+}
+function applyFontSize() {
+  document.body.classList.remove('font-small', 'font-medium', 'font-large');
+  document.body.classList.add(`font-${settings.fontSize}`);
+}
+function applySettings() { applyTheme(); applyFontSize(); }
+
+// ===== READ HISTORY =====
+function markAsRead(article, catId) {
+  readHistory = readHistory.filter(h => h.url !== article.url);
+  readHistory.unshift({
+    url: article.url, title: article.title,
+    source: article.source?.name || '', image: article.image || null,
+    publishedAt: article.publishedAt, catId: catId || currentCat,
+    readAt: new Date().toISOString(),
+  });
+  if (readHistory.length > 50) readHistory = readHistory.slice(0, 50);
+  saveHistory();
+}
+function isRead(url) { return readHistory.some(h => h.url === url); }
 
 // ===== UTILS =====
 function fmtDate(iso) {
   if (!iso) return '';
   const d = new Date(iso);
   if (isNaN(d)) return '';
-  const now = new Date();
-  const diffMs = now - d;
+  const diffMs = Date.now() - d;
   const diffMins = Math.floor(diffMs / 60000);
   const diffH = Math.floor(diffMs / 3600000);
   const diffDays = Math.floor(diffMs / 86400000);
-
   if (diffMins < 2) return 'À l\'instant';
   if (diffMins < 60) return `Il y a ${diffMins} min`;
   if (diffH < 24) return `Il y a ${diffH}h`;
   if (diffDays === 1) return 'Hier';
   if (diffDays < 7) return `Il y a ${diffDays} jours`;
-
   return d.toLocaleDateString('fr-FR', { day: 'numeric', month: 'long' });
 }
-
 function fmtDateLong(d) {
-  return d.toLocaleDateString('fr-FR', {
-    weekday: 'long', day: 'numeric', month: 'long', year: 'numeric'
-  });
+  return d.toLocaleDateString('fr-FR', { weekday:'long', day:'numeric', month:'long', year:'numeric' });
 }
-
-function getCatLabel(id) {
-  const c = CATEGORIES.find(c => c.id === id);
-  return c ? c.label : '';
+function fmtDateOffset(offset) {
+  const d = new Date(); d.setDate(d.getDate() - offset);
+  return d.toLocaleDateString('fr-FR', { day: 'numeric', month: 'long' });
 }
-
-function getCatIcon(id) {
-  const c = CATEGORIES.find(c => c.id === id);
-  return c ? c.icon : '📰';
-}
-
-function isArticleSaved(url) {
-  return savedArticles.some(a => a.url === url);
-}
-
+function getCatLabel(id) { return DEFAULT_CATEGORIES.find(c => c.id === id)?.label || ''; }
+function getCatIcon(id)  { return DEFAULT_CATEGORIES.find(c => c.id === id)?.icon  || '📰'; }
+function isArticleSaved(url) { return savedArticles.some(a => a.url === url); }
 function toggleSave(article) {
-  if (isArticleSaved(article.url)) {
-    savedArticles = savedArticles.filter(a => a.url !== article.url);
-  } else {
-    savedArticles.unshift({ ...article, savedAt: new Date().toISOString() });
-  }
+  if (isArticleSaved(article.url)) savedArticles = savedArticles.filter(a => a.url !== article.url);
+  else savedArticles.unshift({ ...article, savedAt: new Date().toISOString() });
   saveStorage();
 }
-
 function esc(str) {
   if (!str) return '';
   return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function readingTime(text) {
+  const words = (text || '').split(/\s+/).filter(Boolean).length;
+  const mins = Math.max(1, Math.ceil(words / 200));
+  return `${mins} min`;
+}
+function filterArticles(articles) {
+  if (!settings.blockedSources.length) return articles;
+  return articles.filter(a => !settings.blockedSources.includes(a.source?.name || ''));
 }
 
 // ===== API =====
 async function fetchArticles(cat, dateStr) {
   const cacheKey = `${cat}_${dateStr || 'today'}`;
   const now = Date.now();
-
-  // Vérifier le cache
   if (articleCache[cacheKey] && (now - articleCache[cacheKey].timestamp < CACHE_DURATION)) {
     return { articles: articleCache[cacheKey].data };
   }
-
-  // Construire l'URL vers le proxy Vercel
   let url = `${API_BASE}?category=${cat}&max=${MAX_ARTICLES}`;
-
-  // Pour les dates passées, ajouter les filtres from/to
   if (dateStr) {
-    const from = new Date(dateStr);
-    from.setHours(0, 0, 0, 0);
-    const to = new Date(dateStr);
-    to.setHours(23, 59, 59, 999);
+    const from = new Date(dateStr); from.setHours(0,0,0,0);
+    const to   = new Date(dateStr); to.setHours(23,59,59,999);
     url += `&from=${from.toISOString()}&to=${to.toISOString()}`;
   }
-
-  const response = await fetch(url);
-  if (!response.ok) {
-    throw new Error(`API Error ${response.status}`);
-  }
-  const json = await response.json();
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`API ${res.status}`);
+  const json = await res.json();
   const articles = json.articles || [];
-
-  // Mettre en cache
   articleCache[cacheKey] = { data: articles, timestamp: now };
   saveCache();
-
   return { articles };
 }
-
 async function searchArticles(query) {
-  const url = `${API_BASE}?q=${encodeURIComponent(query)}&max=${MAX_ARTICLES}`;
-  const response = await fetch(url);
-  if (!response.ok) throw new Error(`API Error ${response.status}`);
-  const json = await response.json();
-  return json.articles || [];
+  const res = await fetch(`${API_BASE}?q=${encodeURIComponent(query)}&max=${MAX_ARTICLES}`);
+  if (!res.ok) throw new Error(`API ${res.status}`);
+  return (await res.json()).articles || [];
 }
 
-// ===== RENDER HEADER DATE =====
+// ===== HEADER =====
 function renderHeaderDate() {
   const el = document.getElementById('header-date');
-  if (!el) return;
-  const now = new Date();
-  el.textContent = fmtDateLong(now).replace(/^\w/, c => c.toUpperCase());
+  if (el) el.textContent = fmtDateLong(new Date()).replace(/^\w/, c => c.toUpperCase());
 }
-
-// ===== RENDER CAT NAV =====
 function renderCatNav() {
   const nav = document.getElementById('cat-nav');
   if (!nav) return;
-  nav.innerHTML = CATEGORIES.map(c => `
-    <button class="cat-btn ${c.id === currentCat ? 'active' : ''}" data-cat="${c.id}">
-      ${c.label}
-    </button>
+  nav.innerHTML = getCategories().map(c => `
+    <button class="cat-btn ${c.id === currentCat ? 'active' : ''}" data-cat="${c.id}">${c.label}</button>
   `).join('');
   nav.querySelectorAll('.cat-btn').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -184,186 +195,162 @@ function renderCatNav() {
   });
 }
 
-// ===== RENDER HOME =====
+// ===== HOME =====
 async function renderHome() {
   const main = document.getElementById('main-content');
-  main.innerHTML = `<div class="loading"><div class="spinner"></div><div class="loading-text">Chargement des actualités…</div></div>`;
+  main.innerHTML = `<div class="loading"><div class="spinner"></div><div class="loading-text">Chargement…</div></div>`;
 
-  // Date selon l'offset
   let dateStr = null;
   if (dateOffset > 0) {
-    const d = new Date();
-    d.setDate(d.getDate() - dateOffset);
+    const d = new Date(); d.setDate(d.getDate() - dateOffset);
     dateStr = d.toISOString().split('T')[0];
   }
 
   let articles;
   try {
     ({ articles } = await fetchArticles(currentCat, dateStr));
-  } catch (e) {
-    main.innerHTML = `
-      <div class="error-box">
-        <p>Impossible de charger les articles.<br>Vérifiez votre connexion.</p>
-        <button onclick="renderHome()">Réessayer</button>
-      </div>`;
+  } catch {
+    main.innerHTML = `<div class="error-box"><p>Impossible de charger les articles.<br>Vérifiez votre connexion.</p><button onclick="renderHome()">Réessayer</button></div>`;
     return;
   }
 
+  articles = filterArticles(articles);
+
   if (!articles.length) {
-    main.innerHTML = `
-      <div class="date-nav">${renderDateNav()}</div>
-      <div class="error-box" style="margin-top:24px;">
-        <p>Aucun article disponible pour cette période.</p>
-      </div>`;
-    document.getElementById('main-content').querySelector('.date-nav')
-      && bindDateNav(document.getElementById('main-content'));
+    main.innerHTML = `${renderDateNavHTML()}<div class="error-box" style="margin-top:24px;"><p>Aucun article disponible.</p></div>`;
+    bindDateNav(document.getElementById('main-content'));
     return;
   }
 
   const hero = articles[0];
   const rest = articles.slice(1);
-
   const catLabel = getCatLabel(currentCat);
-  const catIcon = getCatIcon(currentCat);
+  const catIcon  = getCatIcon(currentCat);
+  const dateLabel = dateOffset === 0 ? 'Aujourd\'hui' : dateOffset === 1 ? 'Hier' : fmtDateOffset(dateOffset);
 
-  let html = `
+  main.innerHTML = `
     <div class="home-view">
       ${renderDateNavHTML()}
 
-      <!-- HERO -->
-      <div class="hero-article" data-url="${esc(hero.url)}">
-        ${hero.image
-          ? `<img class="hero-img" src="${esc(hero.image)}" alt="" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">`
-          : ''}
+      <div class="hero-article" data-idx="0">
+        ${hero.image ? `<img class="hero-img" src="${esc(hero.image)}" alt="" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">` : ''}
         <div class="hero-no-img" ${hero.image ? 'style="display:none"' : ''}>${catIcon}</div>
         <div class="hero-overlay">
-          <div class="hero-cat">${catLabel}</div>
-          <div class="hero-title">${esc(hero.title)}</div>
-          <div class="hero-meta">${hero.source?.name || ''} · ${fmtDate(hero.publishedAt)}</div>
+          <div class="hero-tags">
+            <span class="hero-cat">${catLabel}</span>
+            <span class="hero-time">⏱ ${readingTime(hero.description || hero.title || '')}</span>
+            ${isRead(hero.url) ? '<span class="read-badge">Lu</span>' : ''}
+          </div>
+          <div class="hero-title ${isRead(hero.url) ? 'is-read' : ''}">${esc(hero.title)}</div>
+          <div class="hero-meta">${esc(hero.source?.name || '')} · ${fmtDate(hero.publishedAt)}</div>
         </div>
-        <button class="hero-save ${isArticleSaved(hero.url) ? 'saved' : ''}" data-url="${esc(hero.url)}" data-idx="0">
-          ${isArticleSaved(hero.url) ? '🔖' : '🔖'}
-        </button>
+        <button class="hero-save ${isArticleSaved(hero.url) ? 'saved' : ''}" data-idx="0">🔖</button>
       </div>
 
-      <!-- LISTE -->
       ${rest.length ? `
         <div class="section-header">
-          <span class="section-title">${catLabel} — ${dateOffset === 0 ? 'Aujourd\'hui' : fmtDateOffset(dateOffset)}</span>
+          <span class="section-title">${catLabel} — ${dateLabel}</span>
           <span class="section-line"></span>
         </div>
         <div class="article-list">
           ${rest.map((a, i) => renderArticleCard(a, i + 1, catLabel)).join('')}
-        </div>
-      ` : ''}
-    </div>
-  `;
+        </div>` : ''}
+    </div>`;
 
-  main.innerHTML = html;
-
-  // Stocker les articles pour y accéder au clic
-  main._articles = articles;
-
-  // Events
+  currentArticleList = articles;
+  currentArticleCat = currentCat;
   bindHomeEvents(main, articles);
 }
 
 function renderDateNavHTML() {
-  const today = new Date();
-  const d = new Date();
-  d.setDate(d.getDate() - dateOffset);
   const label = dateOffset === 0 ? 'Aujourd\'hui' : dateOffset === 1 ? 'Hier' : fmtDateOffset(dateOffset);
-
-  return `
-    <div class="date-nav">
-      <button class="date-nav-btn" id="date-prev" ${dateOffset >= MAX_DAYS_BACK ? 'disabled' : ''}>&#8249;</button>
-      <span class="date-nav-label">${label}</span>
-      <button class="date-nav-btn" id="date-next" ${dateOffset <= 0 ? 'disabled' : ''}>&#8250;</button>
-    </div>
-  `;
+  return `<div class="date-nav">
+    <button class="date-nav-btn" id="date-prev" ${dateOffset >= MAX_DAYS_BACK ? 'disabled' : ''}>&#8249;</button>
+    <span class="date-nav-label">${label}</span>
+    <button class="date-nav-btn" id="date-next" ${dateOffset <= 0 ? 'disabled' : ''}>&#8250;</button>
+  </div>`;
 }
-
-function renderDateNav() {
-  return renderDateNavHTML();
-}
-
-function fmtDateOffset(offset) {
-  const d = new Date();
-  d.setDate(d.getDate() - offset);
-  return d.toLocaleDateString('fr-FR', { day: 'numeric', month: 'long' });
-}
-
 function bindDateNav(container) {
-  const prevBtn = container.querySelector('#date-prev');
-  const nextBtn = container.querySelector('#date-next');
-  if (prevBtn) prevBtn.addEventListener('click', () => { dateOffset++; renderHome(); });
-  if (nextBtn) nextBtn.addEventListener('click', () => { dateOffset = Math.max(0, dateOffset - 1); renderHome(); });
+  const p = container.querySelector('#date-prev');
+  const n = container.querySelector('#date-next');
+  if (p) p.addEventListener('click', () => { dateOffset++; renderHome(); });
+  if (n) n.addEventListener('click', () => { dateOffset = Math.max(0, dateOffset - 1); renderHome(); });
 }
 
 function renderArticleCard(article, idx, catLabel) {
   const saved = isArticleSaved(article.url);
+  const read  = isRead(article.url);
+  const time  = readingTime(article.description || article.title || '');
   return `
-    <div class="article-card" data-url="${esc(article.url)}" data-idx="${idx}">
+    <div class="article-card ${read ? 'is-read' : ''}" data-idx="${idx}">
       <div class="article-card-body">
-        <div class="article-cat-tag">${esc(catLabel)}</div>
+        ${catLabel ? `<div class="article-cat-tag">${esc(catLabel)}</div>` : ''}
         <div class="article-title">${esc(article.title)}</div>
         ${article.description ? `<div class="article-desc">${esc(article.description)}</div>` : ''}
         <div class="article-meta">
           <span>${esc(article.source?.name || '')}</span>
           <span class="sep">·</span>
           <span>${fmtDate(article.publishedAt)}</span>
+          <span class="sep">·</span>
+          <span>⏱ ${time}</span>
+          ${read ? '<span class="sep">·</span><span class="read-tag">Lu</span>' : ''}
         </div>
       </div>
       ${article.image
         ? `<img class="article-thumb" src="${esc(article.image)}" alt="" loading="lazy" onerror="this.style.display='none'">`
-        : `<div class="article-thumb-placeholder">${getCatIcon(currentCat)}</div>`
-      }
-      <button class="card-save-btn ${saved ? 'saved' : ''}" data-url="${esc(article.url)}" data-idx="${idx}">🔖</button>
-    </div>
-  `;
+        : `<div class="article-thumb-placeholder">${getCatIcon(currentCat)}</div>`}
+      <button class="card-save-btn ${saved ? 'saved' : ''}" data-idx="${idx}">🔖</button>
+    </div>`;
 }
 
 function bindHomeEvents(container, articles) {
-  // Date nav
   bindDateNav(container);
-
-  // Clic article
   container.querySelectorAll('.hero-article, .article-card').forEach(el => {
-    el.addEventListener('click', (e) => {
+    el.addEventListener('click', e => {
       if (e.target.closest('.hero-save') || e.target.closest('.card-save-btn')) return;
       const idx = parseInt(el.dataset.idx || '0');
-      openArticle(articles[idx], currentCat);
+      openArticle(articles[idx], currentCat, articles, idx);
     });
   });
-
-  // Save buttons
   container.querySelectorAll('.hero-save, .card-save-btn').forEach(btn => {
-    btn.addEventListener('click', (e) => {
+    btn.addEventListener('click', e => {
       e.stopPropagation();
       const idx = parseInt(btn.dataset.idx || '0');
-      const article = articles[idx];
-      toggleSave(article);
-      // Mettre à jour visuellement
-      const saved = isArticleSaved(article.url);
-      btn.classList.toggle('saved', saved);
-      // Si on est dans la vue saved, re-render
+      toggleSave(articles[idx]);
+      btn.classList.toggle('saved', isArticleSaved(articles[idx].url));
       if (currentView === 'saved') renderSaved();
     });
   });
 }
 
-// ===== OPEN ARTICLE =====
-function renderArticleShell(article, catId, bodyHtml) {
-  const saved = isArticleSaved(article.url);
+// ===== ARTICLE READER =====
+function openArticle(article, catId, articleList, idx) {
+  currentArticle = article;
+  currentArticleIdx = idx || 0;
+  if (articleList) currentArticleList = articleList;
+  currentArticleCat = catId || currentCat;
+
+  markAsRead(article, catId);
+
+  const overlay = document.getElementById('article-overlay');
+  overlay.classList.remove('hidden');
+  overlay.scrollTop = 0;
+
+  const hasPrev = currentArticleIdx > 0;
+  const hasNext = currentArticleIdx < currentArticleList.length - 1;
   const catLabel = getCatLabel(catId || currentCat);
-  return `
+  const saved = isArticleSaved(article.url);
+
+  overlay.innerHTML = `
     <div class="article-reader">
       <div class="reader-header">
         <button class="reader-back" id="reader-back">&#8592;</button>
         <span class="reader-title-small">${esc(article.title)}</span>
-        <button class="reader-save-btn ${saved ? 'saved' : ''}" id="reader-save-btn">
-          ${saved ? '🔖 Sauvegardé' : '🔖 Sauvegarder'}
-        </button>
+        <div class="reader-header-actions">
+          <button class="reader-font-btn font-sm-btn" id="reader-font-sm" title="Réduire">a</button>
+          <button class="reader-font-btn font-lg-btn" id="reader-font-lg" title="Agrandir">A</button>
+          <button class="reader-save-btn ${saved ? 'saved' : ''}" id="reader-save-btn">🔖</button>
+        </div>
       </div>
 
       ${article.image ? `<img class="reader-img" src="${esc(article.image)}" alt="" loading="lazy">` : ''}
@@ -375,63 +362,106 @@ function renderArticleShell(article, catId, bodyHtml) {
           <span>${esc(article.source?.name || '')}</span>
           <span>·</span>
           <span>${fmtDate(article.publishedAt)}</span>
-          ${article.publishedAt ? `<span>·</span><span>${new Date(article.publishedAt).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' })}</span>` : ''}
+          ${article.publishedAt ? `<span>·</span><span>${new Date(article.publishedAt).toLocaleDateString('fr-FR',{day:'numeric',month:'long',year:'numeric'})}</span>` : ''}
+          <span id="reader-time-badge"></span>
         </div>
 
         <div class="reader-divider"><span>◆</span></div>
 
         ${article.description ? `<div class="reader-description">${esc(article.description)}</div>` : ''}
 
-        <div id="reader-body-slot">${bodyHtml}</div>
+        <div id="reader-body-slot"><div class="reader-loading"><div class="spinner"></div></div></div>
 
         <a href="${esc(article.url)}" target="_blank" rel="noopener" class="reader-more">
           Lire l'article sur ${esc(article.source?.name || 'la source')} →
         </a>
 
-        <div class="reader-source">
-          Source : ${esc(article.source?.name || '')}
+        <div class="reader-source-row">
+          <span>Source : ${esc(article.source?.name || '')}</span>
+          ${article.source?.name ? `<button class="block-source-btn" id="block-source-btn" data-source="${esc(article.source.name)}">Bloquer cette source</button>` : ''}
         </div>
       </div>
-    </div>
-  `;
-}
 
-function openArticle(article, catId) {
-  currentArticle = article;
-  const overlay = document.getElementById('article-overlay');
-  overlay.classList.remove('hidden');
-  overlay.scrollTop = 0;
+      <div id="reader-similar"></div>
 
-  // Afficher d'abord le shell avec un spinner dans le corps
-  const loadingBody = `<div class="reader-loading"><div class="spinner"></div></div>`;
-  overlay.innerHTML = renderArticleShell(article, catId, loadingBody);
+      <div class="reader-nav-btns">
+        <button class="reader-nav-btn" id="reader-prev" ${hasPrev ? '' : 'disabled'}>&#8592; Précédent</button>
+        <button class="reader-nav-btn" id="reader-next" ${hasNext ? '' : 'disabled'}>Suivant &#8594;</button>
+      </div>
+    </div>`;
 
-  // Events immédiatement
+  // Events
   document.getElementById('reader-back').addEventListener('click', closeArticle);
   document.getElementById('reader-save-btn').addEventListener('click', () => {
     toggleSave(article);
     const s = isArticleSaved(article.url);
-    const btn = document.getElementById('reader-save-btn');
-    if (btn) {
-      btn.classList.toggle('saved', s);
-      btn.textContent = s ? '🔖 Sauvegardé' : '🔖 Sauvegarder';
-    }
+    document.getElementById('reader-save-btn')?.classList.toggle('saved', s);
     if (currentView === 'saved') renderSaved();
   });
+  document.getElementById('reader-font-sm').addEventListener('click', () => {
+    const sizes = ['small','medium','large'];
+    const i = sizes.indexOf(settings.fontSize);
+    if (i > 0) { settings.fontSize = sizes[i-1]; applyFontSize(); saveSettings(); }
+  });
+  document.getElementById('reader-font-lg').addEventListener('click', () => {
+    const sizes = ['small','medium','large'];
+    const i = sizes.indexOf(settings.fontSize);
+    if (i < 2) { settings.fontSize = sizes[i+1]; applyFontSize(); saveSettings(); }
+  });
+  document.getElementById('reader-prev')?.addEventListener('click', () => navigateArticle(-1));
+  document.getElementById('reader-next')?.addEventListener('click', () => navigateArticle(1));
 
-  // Charger le contenu complet en arrière-plan
+  const blockBtn = document.getElementById('block-source-btn');
+  if (blockBtn) {
+    blockBtn.addEventListener('click', () => {
+      const source = blockBtn.dataset.source;
+      if (!settings.blockedSources.includes(source)) {
+        settings.blockedSources.push(source);
+        saveSettings();
+      }
+      blockBtn.textContent = '✓ Source bloquée';
+      blockBtn.disabled = true;
+    });
+  }
+
+  // Swipe
+  let startX = 0, startY = 0;
+  overlay.addEventListener('touchstart', e => {
+    startX = e.touches[0].clientX;
+    startY = e.touches[0].clientY;
+  }, { passive: true });
+  overlay.addEventListener('touchend', e => {
+    const dx = startX - e.changedTouches[0].clientX;
+    const dy = Math.abs(startY - e.changedTouches[0].clientY);
+    if (Math.abs(dx) > 70 && Math.abs(dx) > dy * 1.5) {
+      if (dx > 0) navigateArticle(1);
+      else navigateArticle(-1);
+    }
+  }, { passive: true });
+
   fetchFullArticle(article.url);
+}
+
+function navigateArticle(dir) {
+  const newIdx = currentArticleIdx + dir;
+  if (newIdx < 0 || newIdx >= currentArticleList.length) return;
+  document.getElementById('article-overlay').scrollTop = 0;
+  openArticle(currentArticleList[newIdx], currentArticleCat, currentArticleList, newIdx);
 }
 
 async function fetchFullArticle(url) {
   if (!document.getElementById('reader-body-slot')) return;
   try {
-    const res = await fetch(`/api/article?url=${encodeURIComponent(url)}`);
+    const res  = await fetch(`/api/article?url=${encodeURIComponent(url)}`);
     const data = await res.json();
     const slot = document.getElementById('reader-body-slot');
     if (!slot) return;
-    if (data.paragraphs && data.paragraphs.length) {
+
+    if (data.paragraphs?.length) {
       slot.innerHTML = `<div class="reader-body">${data.paragraphs.map(p => `<p>${esc(p)}</p>`).join('')}</div>`;
+      const badge = document.getElementById('reader-time-badge');
+      if (badge) badge.textContent = `· ⏱ ${readingTime(data.paragraphs.join(' '))} de lecture`;
+      renderSimilarArticles();
     } else {
       slot.innerHTML = `<div class="reader-unavailable">Article complet non disponible — le site source bloque la lecture intégrée.</div>`;
     }
@@ -441,6 +471,38 @@ async function fetchFullArticle(url) {
   }
 }
 
+function renderSimilarArticles() {
+  const container = document.getElementById('reader-similar');
+  if (!container || !currentArticle) return;
+  const similar = currentArticleList.filter(a => a.url !== currentArticle.url).slice(0, 3);
+  if (!similar.length) return;
+
+  container.innerHTML = `
+    <div class="similar-section">
+      <div class="section-header" style="margin:0;padding:14px 16px 8px;">
+        <span class="section-title">Dans la même catégorie</span>
+        <span class="section-line"></span>
+      </div>
+      ${similar.map((a, i) => `
+        <div class="similar-card" data-sidx="${i}">
+          ${a.image ? `<img class="similar-thumb" src="${esc(a.image)}" alt="" loading="lazy" onerror="this.style.display='none'">` : '<div class="similar-thumb-ph"></div>'}
+          <div class="similar-body">
+            <div class="similar-title">${esc(a.title)}</div>
+            <div class="similar-meta">${esc(a.source?.name || '')} · ${fmtDate(a.publishedAt)}</div>
+          </div>
+        </div>`).join('')}
+    </div>`;
+
+  container.querySelectorAll('.similar-card').forEach(card => {
+    card.addEventListener('click', () => {
+      const a = similar[parseInt(card.dataset.sidx)];
+      const listIdx = currentArticleList.findIndex(x => x.url === a.url);
+      document.getElementById('article-overlay').scrollTop = 0;
+      openArticle(a, currentArticleCat, currentArticleList, listIdx >= 0 ? listIdx : 0);
+    });
+  });
+}
+
 function closeArticle() {
   const overlay = document.getElementById('article-overlay');
   overlay.classList.add('hidden');
@@ -448,7 +510,7 @@ function closeArticle() {
   currentArticle = null;
 }
 
-// ===== RENDER SEARCH =====
+// ===== SEARCH =====
 function renderSearch() {
   const main = document.getElementById('main-content');
   main.innerHTML = `
@@ -456,114 +518,236 @@ function renderSearch() {
       <div class="search-box-wrap">
         <input type="search" class="search-input" id="search-input"
           placeholder="Rechercher dans les actualités…"
-          value="${esc(searchQuery)}"
-          autocomplete="off"
-          autocorrect="off"
-          spellcheck="false">
+          value="${esc(searchQuery)}" autocomplete="off" autocorrect="off" spellcheck="false">
         <button class="search-btn" id="search-btn">🔍</button>
       </div>
       <div id="search-results"></div>
-    </div>
-  `;
+    </div>`;
 
-  const input = document.getElementById('search-input');
-  const btn = document.getElementById('search-btn');
+  const input   = document.getElementById('search-input');
   const results = document.getElementById('search-results');
 
   const doSearch = async () => {
     const q = input.value.trim();
     if (!q) return;
     searchQuery = q;
-    results.innerHTML = `<div class="loading"><div class="spinner"></div><div class="loading-text">Recherche en cours…</div></div>`;
+    results.innerHTML = `<div class="loading"><div class="spinner"></div><div class="loading-text">Recherche…</div></div>`;
     try {
-      const articles = await searchArticles(q);
+      let articles = filterArticles(await searchArticles(q));
       if (!articles.length) {
         results.innerHTML = `<div class="search-hint">Aucun résultat pour « ${esc(q)} »</div>`;
         return;
       }
       results.innerHTML = `
         <div class="search-results-count">${articles.length} résultat${articles.length > 1 ? 's' : ''} pour « ${esc(q)} »</div>
-        <div class="article-list">
-          ${articles.map((a, i) => renderArticleCard(a, i, getCatLabel(currentCat))).join('')}
-        </div>
-      `;
-      // Bind article clicks
+        <div class="article-list">${articles.map((a, i) => renderArticleCard(a, i, getCatLabel(currentCat))).join('')}</div>`;
       results.querySelectorAll('.article-card').forEach(el => {
-        el.addEventListener('click', (e) => {
+        el.addEventListener('click', e => {
           if (e.target.closest('.card-save-btn')) return;
           const idx = parseInt(el.dataset.idx);
-          openArticle(articles[idx], 'general');
+          openArticle(articles[idx], 'general', articles, idx);
         });
       });
       results.querySelectorAll('.card-save-btn').forEach(btn => {
-        btn.addEventListener('click', (e) => {
+        btn.addEventListener('click', e => {
           e.stopPropagation();
           const idx = parseInt(btn.dataset.idx);
           toggleSave(articles[idx]);
           btn.classList.toggle('saved', isArticleSaved(articles[idx].url));
         });
       });
-    } catch (e) {
-      results.innerHTML = `<div class="error-box"><p>Erreur de recherche. Réessayez.</p></div>`;
+    } catch {
+      results.innerHTML = `<div class="error-box"><p>Erreur de recherche.</p></div>`;
     }
   };
 
-  btn.addEventListener('click', doSearch);
+  document.getElementById('search-btn').addEventListener('click', doSearch);
   input.addEventListener('keydown', e => { if (e.key === 'Enter') doSearch(); });
-
-  if (searchQuery) {
-    doSearch();
-  } else {
-    results.innerHTML = `<div class="search-hint">Tapez un mot-clé pour rechercher<br>dans les actualités françaises</div>`;
-  }
-
+  if (searchQuery) doSearch();
+  else results.innerHTML = `<div class="search-hint">Tapez un mot-clé pour rechercher dans les actualités françaises</div>`;
   input.focus();
 }
 
-// ===== RENDER SAVED =====
+// ===== SAVED =====
 function renderSaved() {
   const main = document.getElementById('main-content');
   if (!savedArticles.length) {
     main.innerHTML = `
       <div class="saved-view">
-        <div class="section-header">
-          <span class="section-title">Articles sauvegardés</span>
-          <span class="section-line"></span>
-        </div>
-        <div class="saved-empty">
-          <div class="icon">🔖</div>
-          <p>Vous n'avez pas encore<br>sauvegardé d'articles.</p>
-        </div>
-      </div>
-    `;
+        <div class="section-header"><span class="section-title">Articles sauvegardés</span><span class="section-line"></span></div>
+        <div class="saved-empty"><div class="icon">🔖</div><p>Aucun article sauvegardé.</p></div>
+      </div>`;
     return;
   }
-
   main.innerHTML = `
     <div class="saved-view">
-      <div class="section-header">
-        <span class="section-title">${savedArticles.length} article${savedArticles.length > 1 ? 's' : ''} sauvegardé${savedArticles.length > 1 ? 's' : ''}</span>
-        <span class="section-line"></span>
-      </div>
-      <div class="article-list">
-        ${savedArticles.map((a, i) => renderArticleCard(a, i, '')).join('')}
-      </div>
-    </div>
-  `;
-
+      <div class="section-header"><span class="section-title">${savedArticles.length} sauvegardé${savedArticles.length > 1 ? 's' : ''}</span><span class="section-line"></span></div>
+      <div class="article-list">${savedArticles.map((a, i) => renderArticleCard(a, i, getCatLabel(a.catId || 'general'))).join('')}</div>
+    </div>`;
   main.querySelectorAll('.article-card').forEach(el => {
-    el.addEventListener('click', (e) => {
+    el.addEventListener('click', e => {
       if (e.target.closest('.card-save-btn')) return;
       const idx = parseInt(el.dataset.idx);
-      openArticle(savedArticles[idx], 'general');
+      openArticle(savedArticles[idx], savedArticles[idx].catId || 'general', savedArticles, idx);
     });
   });
   main.querySelectorAll('.card-save-btn').forEach(btn => {
-    btn.addEventListener('click', (e) => {
+    btn.addEventListener('click', e => {
       e.stopPropagation();
-      const idx = parseInt(btn.dataset.idx);
-      toggleSave(savedArticles[idx]);
-      renderSaved(); // re-render
+      toggleSave(savedArticles[parseInt(btn.dataset.idx)]);
+      renderSaved();
+    });
+  });
+}
+
+// ===== SETTINGS =====
+function renderSettings() {
+  const main = document.getElementById('main-content');
+
+  main.innerHTML = `
+    <div class="settings-view">
+
+      <div class="settings-section">
+        <div class="settings-section-title">Apparence</div>
+
+        <div class="settings-row">
+          <span class="settings-label">Thème</span>
+          <div class="toggle-group">
+            <button class="toggle-btn ${settings.theme === 'dark'  ? 'active' : ''}" data-theme="dark">🌙 Sombre</button>
+            <button class="toggle-btn ${settings.theme === 'light' ? 'active' : ''}" data-theme="light">☀️ Clair</button>
+          </div>
+        </div>
+
+        <div class="settings-row">
+          <span class="settings-label">Taille du texte</span>
+          <div class="toggle-group">
+            <button class="toggle-btn font-sz-btn ${settings.fontSize === 'small'  ? 'active' : ''}" data-size="small"  style="font-size:12px">A</button>
+            <button class="toggle-btn font-sz-btn ${settings.fontSize === 'medium' ? 'active' : ''}" data-size="medium" style="font-size:15px">A</button>
+            <button class="toggle-btn font-sz-btn ${settings.fontSize === 'large'  ? 'active' : ''}" data-size="large"  style="font-size:19px">A</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <div class="settings-section-title">Catégories</div>
+        <div class="settings-hint">Activer / désactiver · ↑↓ pour réordonner</div>
+        <div id="cat-manager">
+          ${settings.catOrder.map((id, i) => {
+            const c = DEFAULT_CATEGORIES.find(x => x.id === id);
+            if (!c) return '';
+            const hidden = settings.hiddenCats.includes(id);
+            return `
+              <div class="cat-row ${hidden ? 'cat-hidden' : ''}" data-catid="${id}">
+                <button class="cat-toggle-btn ${hidden ? '' : 'on'}" data-catid="${id}">${hidden ? '○' : '●'}</button>
+                <span class="cat-row-icon">${c.icon}</span>
+                <span class="cat-row-label">${c.label}</span>
+                <div class="cat-row-arrows">
+                  <button class="cat-arrow" data-dir="-1" data-catid="${id}" ${i === 0 ? 'disabled' : ''}>↑</button>
+                  <button class="cat-arrow" data-dir="1"  data-catid="${id}" ${i === settings.catOrder.length-1 ? 'disabled' : ''}>↓</button>
+                </div>
+              </div>`;
+          }).join('')}
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <div class="settings-section-title">Sources bloquées</div>
+        ${!settings.blockedSources.length
+          ? `<div class="settings-hint">Aucune source bloquée.<br>Appuyez sur "Bloquer cette source" en bas d'un article.</div>`
+          : settings.blockedSources.map(s => `
+              <div class="blocked-row">
+                <span class="blocked-name">${esc(s)}</span>
+                <button class="unblock-btn" data-src="${esc(s)}">Débloquer</button>
+              </div>`).join('')}
+      </div>
+
+      <div class="settings-section">
+        <div class="settings-section-title">Lu récemment</div>
+        ${!readHistory.length
+          ? `<div class="settings-hint">Aucun article lu pour l'instant.</div>`
+          : `<div class="article-list">
+              ${readHistory.slice(0, 20).map((a, i) => `
+                <div class="article-card history-card" data-hidx="${i}">
+                  <div class="article-card-body">
+                    <div class="article-title">${esc(a.title)}</div>
+                    <div class="article-meta">
+                      <span>${esc(a.source)}</span>
+                      <span class="sep">·</span>
+                      <span>Lu ${fmtDate(a.readAt)}</span>
+                    </div>
+                  </div>
+                  ${a.image ? `<img class="article-thumb" src="${esc(a.image)}" alt="" loading="lazy" onerror="this.style.display='none'">` : ''}
+                </div>`).join('')}
+            </div>
+            <button class="clear-btn" id="clear-history">Effacer l'historique</button>`}
+      </div>
+
+    </div>`;
+
+  // Theme
+  main.querySelectorAll('[data-theme]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      settings.theme = btn.dataset.theme;
+      applyTheme(); saveSettings();
+      main.querySelectorAll('[data-theme]').forEach(b => b.classList.toggle('active', b.dataset.theme === settings.theme));
+    });
+  });
+
+  // Font size
+  main.querySelectorAll('.font-sz-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      settings.fontSize = btn.dataset.size;
+      applyFontSize(); saveSettings();
+      main.querySelectorAll('.font-sz-btn').forEach(b => b.classList.toggle('active', b.dataset.size === settings.fontSize));
+    });
+  });
+
+  // Cat toggle
+  main.querySelectorAll('.cat-toggle-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const id = btn.dataset.catid;
+      if (settings.hiddenCats.includes(id)) {
+        settings.hiddenCats = settings.hiddenCats.filter(x => x !== id);
+      } else {
+        const visible = settings.catOrder.filter(x => !settings.hiddenCats.includes(x));
+        if (visible.length <= 1) return;
+        settings.hiddenCats.push(id);
+      }
+      saveSettings(); renderCatNav(); renderSettings();
+    });
+  });
+
+  // Cat reorder
+  main.querySelectorAll('.cat-arrow').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const id = btn.dataset.catid;
+      const dir = parseInt(btn.dataset.dir);
+      const i = settings.catOrder.indexOf(id);
+      const j = i + dir;
+      if (j < 0 || j >= settings.catOrder.length) return;
+      [settings.catOrder[i], settings.catOrder[j]] = [settings.catOrder[j], settings.catOrder[i]];
+      saveSettings(); renderCatNav(); renderSettings();
+    });
+  });
+
+  // Unblock
+  main.querySelectorAll('.unblock-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      settings.blockedSources = settings.blockedSources.filter(s => s !== btn.dataset.src);
+      saveSettings(); renderSettings();
+    });
+  });
+
+  // Clear history
+  document.getElementById('clear-history')?.addEventListener('click', () => {
+    readHistory = []; saveHistory(); renderSettings();
+  });
+
+  // History article click
+  main.querySelectorAll('.history-card').forEach(card => {
+    card.addEventListener('click', () => {
+      const a = readHistory[parseInt(card.dataset.hidx)];
+      if (a) openArticle(a, a.catId || 'general', [a], 0);
     });
   });
 }
@@ -572,44 +756,34 @@ function renderSaved() {
 function bindBottomNav() {
   document.getElementById('bottom-nav').querySelectorAll('.nav-btn').forEach(btn => {
     btn.addEventListener('click', () => {
-      const view = btn.dataset.view;
-      if (view === currentView) return;
-      setView(view);
+      if (btn.dataset.view !== currentView) setView(btn.dataset.view);
     });
   });
 }
 
 function setView(view) {
   currentView = view;
-  // Update nav active state
-  document.querySelectorAll('.nav-btn').forEach(btn => {
-    btn.classList.toggle('active', btn.dataset.view === view);
-  });
-  // Show/hide cat nav (only on home)
+  document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b.dataset.view === view));
   const catNav = document.getElementById('cat-nav');
   if (catNav) catNav.style.display = view === 'home' ? '' : 'none';
-
-  if (view === 'home') renderHome();
-  else if (view === 'search') renderSearch();
-  else if (view === 'saved') renderSaved();
+  if      (view === 'home')     renderHome();
+  else if (view === 'search')   renderSearch();
+  else if (view === 'saved')    renderSaved();
+  else if (view === 'settings') renderSettings();
 }
 
 // ===== SERVICE WORKER =====
 function registerSW() {
-  if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('sw.js').catch(() => {});
-  }
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 }
 
 function forceUpdate() {
   const btn = document.getElementById('sw-update-btn');
   if (btn) { btn.textContent = '↻ Mise à jour…'; btn.disabled = true; }
   if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.getRegistrations().then(regs => {
-      Promise.all(regs.map(r => r.unregister())).then(() => {
-        window.location.reload(true);
-      });
-    });
+    navigator.serviceWorker.getRegistrations()
+      .then(regs => Promise.all(regs.map(r => r.unregister())))
+      .then(() => window.location.reload(true));
   } else {
     window.location.reload(true);
   }
@@ -618,6 +792,7 @@ function forceUpdate() {
 // ===== INIT =====
 document.addEventListener('DOMContentLoaded', () => {
   loadStorage();
+  applySettings();
   renderHeaderDate();
   renderCatNav();
   bindBottomNav();
