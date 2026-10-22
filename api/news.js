@@ -1,4 +1,5 @@
-const API_KEY = 'c0580bedaccc241787b68df2c4e6d6f8';
+// Clé GNews : variable d'environnement Vercel GNEWS_API_KEY, jamais dans le code (dépôt public).
+const API_KEY = process.env.GNEWS_API_KEY;
 const API_BASE = 'https://gnews.io/api/v4';
 
 export default async function handler(req, res) {
@@ -6,6 +7,11 @@ export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
   if (req.method === 'OPTIONS') {
     res.status(200).end();
+    return;
+  }
+
+  if (!API_KEY) {
+    res.status(500).json({ error: 'GNEWS_API_KEY manquante dans les variables Vercel' });
     return;
   }
 
